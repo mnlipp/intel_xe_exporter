@@ -54,6 +54,21 @@ This creates:
 
 Image: `ghcr.io/mnlipp/intel_xe_exporter:latest`
 
+### Security
+
+To read GPU metrics from other processes, container needs
+access to `/proc/*/fdinfo/`. This requires two things:
+
+- **`hostPID: true`** — the container must see host PIDs. Without
+  this, `/proc` only contains the container's own processes.
+- **`CAP_SYS_PTRACE`** — the kernel blocks reading `/proc/<pid>/fdinfo/`
+  for processes that don't belong to the caller. This capability lifts
+  that restriction.
+
+All other capabilities are dropped (`drop: ALL`) to keep the
+surface area minimal. The container runs as root because
+`/proc/*/fdinfo/` is readable by root only.
+
 ### Testing
 
 Deploy the manifests from above, then port-forward to a running pod:

@@ -17,8 +17,8 @@ spec:
       hostPID: true
       containers:
         - name: intel-xe-exporter
-          image: intel-xe-exporter:latest
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/mnlipp/intel_xe_exporter:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 9830
               name: metrics

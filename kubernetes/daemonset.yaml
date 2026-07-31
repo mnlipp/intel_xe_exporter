@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: intel-xe-exporter
+  namespace: monitoring
+  labels:
+    app: intel-xe-exporter
+spec:
+  selector:
+    matchLabels:
+      app: intel-xe-exporter
+  template:
+    metadata:
+      labels:
+        app: intel-xe-exporter
+    spec:
+      hostPID: true
+      containers:
+        - name: intel-xe-exporter
+          image: intel-xe-exporter:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9830
+              name: metrics
+              protocol: TCP
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          securityContext:
+            runAsNonRoot: false
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9830
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9830
+            initialDelaySeconds: 5
+            periodSeconds: 10

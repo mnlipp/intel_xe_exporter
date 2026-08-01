@@ -14,6 +14,11 @@ gpu_vram = Gauge(
     "Resident VRAM used by Intel Xe GPUs"
 )
 
+gpu_vram_total = Gauge(
+    "intel_xe_vram_total_bytes",
+    "Total VRAM capacity of Intel Xe GPUs"
+)
+
 gpu_system = Gauge(
     "intel_xe_system_resident_bytes",
     "Resident system memory used by Intel Xe GPUs"
@@ -129,6 +134,7 @@ def read_xe_clients():
             "process": process_name(pid),
             "card": card,
             "vram": {},
+            "vram_total": {},
             "system": 0,
             "cycles": {},
             "active_cycles": {},
@@ -147,7 +153,7 @@ def read_xe_clients():
             value = value.strip()
 
 
-            # VRAM tiles
+            # Resident VRAM tiles
             m = re.match(
                 r"drm-resident-vram(\d+)",
                 key
@@ -155,6 +161,17 @@ def read_xe_clients():
 
             if m:
                 values["vram"][m.group(1)] = parse_size(value)
+                continue
+
+
+            # Total VRAM tiles
+            m = re.match(
+                r"drm-total-vram(\d+)",
+                key
+            )
+
+            if m:
+                values["vram_total"][m.group(1)] = parse_size(value)
                 continue
 
 
@@ -293,6 +310,7 @@ def update():
     clients = read_xe_clients()
 
     total_vram = 0
+    total_vram_capacity = {}
     total_system = 0
 
 
@@ -326,7 +344,14 @@ def update():
         )
 
 
+        for tile, size in client["vram_total"].items():
+
+            if tile not in total_vram_capacity:
+                total_vram_capacity[tile] = size
+
+
     gpu_vram.set(total_vram)
+    gpu_vram_total.set(sum(total_vram_capacity.values()))
     gpu_system.set(total_system)
 
 

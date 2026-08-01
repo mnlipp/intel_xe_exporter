@@ -52,7 +52,7 @@ engine_capacity = Gauge(
 engine_util = Gauge(
     "intel_xe_engine_busy_ratio",
     "Intel Xe engine utilization ratio",
-    ["engine"]
+    ["engine", "pid", "process"]
 )
 
 
@@ -208,6 +208,7 @@ def read_xe_clients():
 
 previous_total_cycles = {}
 previous_active_cycles = {}
+previous_process_active = {}
 
 
 def update_engine_stats(clients):
@@ -230,6 +231,9 @@ def update_engine_stats(clients):
       all units are fully occupied.
 
     The first scrape after startup skips utilization (no previous delta).
+
+    Busy ratio is reported per process.  The global delta_total serves as the
+    denominator for every process's ratio.
     """
 
     total = {}
@@ -265,19 +269,33 @@ def update_engine_stats(clients):
             continue
 
         old_total = previous_total_cycles[engine]
-        old_active = previous_active_cycles.get(engine, 0)
         delta_total = total[engine] - old_total
-        delta_active = active.get(engine, 0) - old_active
         capacity = capacities.get(engine, 1)
 
-        if delta_total > 0:
+        if delta_total <= 0:
+            continue
+
+        for client in clients:
+            key = (client["pid"], client["process"], engine)
+            current_active = client["active_cycles"].get(engine, 0)
+            old_process_active = previous_process_active.get(key, 0)
+            delta_active = current_active - old_process_active
+
             busy = delta_active / (delta_total * capacity)
-            engine_util.labels(engine).set(max(0, min(busy, 1)))
+            engine_util.labels(
+                engine, client["pid"], client["process"]
+            ).set(max(0, min(busy, 1)))
 
     previous_total_cycles.clear()
     previous_total_cycles.update(total)
     previous_active_cycles.clear()
     previous_active_cycles.update(active)
+
+    previous_process_active.clear()
+    for client in clients:
+        for engine, value in client["active_cycles"].items():
+            key = (client["pid"], client["process"], engine)
+            previous_process_active[key] = value
 
 
 # ---------------- Update metrics ----------------
@@ -293,6 +311,7 @@ def update():
     process_vram.clear()
     process_system.clear()
     engine_cycles.clear()
+    engine_util.clear()
 
     for client in clients:
 

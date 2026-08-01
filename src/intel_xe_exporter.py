@@ -100,8 +100,17 @@ def read_xe_clients():
 
       - drm-engine-capacity-<eng> : Number of engine units (e.g. vcs=2, vecs=2).
         Used to scale the busy ratio so multi-unit engines can reach 100%.
+
+    Fds pointing to the same underlying DRM file (same inode number) are
+    deduplicated.  Remaining fds belonging to the same process are aggregated
+    into a single client entry: VRAM and system memory are summed per tile,
+    active cycles are summed per engine, and global counters (total cycles,
+    capacity) are taken from the first fd only.
     """
-    clients = []
+
+    # Collect all DRM fdinfo paths grouped by PID, keyed by inode to
+    # deduplicate fds that refer to the same DRM file.
+    drm_fds = {}
 
     for path in glob.glob("/proc/[0-9]*/fdinfo/*"):
 
@@ -120,53 +129,77 @@ def read_xe_clients():
         if not re.search(r"^drm-driver:\s*xe\s*$", data, re.MULTILINE):
             continue
 
-        card = "unknown"
-        m = re.search(r"drm-pdev:\s+([0-9a-f:.]+)", data)
-        if m:
-            card = m.group(1)
+        ino_match = re.search(r"^ino:\s+(\d+)", data, re.MULTILINE)
+        ino = ino_match.group(1) if ino_match else path
 
-        values = {
+        drm_fds.setdefault(pid, {})
+        # Only keep the first fdinfo for each inode within this PID.
+        if ino not in drm_fds[pid]:
+            drm_fds[pid][ino] = data
+
+    # Parse and aggregate all unique fds per PID into a single client entry.
+    clients = []
+
+    for pid, fd_map in drm_fds.items():
+        fd_contents = list(fd_map.values())
+        card = "unknown"
+        vram = {}
+        system = 0
+        cycles = {}
+        active_cycles = {}
+        capacity = {}
+
+        for data in fd_contents:
+            m = re.search(r"drm-pdev:\s+([0-9a-f:.]+)", data)
+            if m and card == "unknown":
+                card = m.group(1)
+
+            for line in data.splitlines():
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                key = key.strip()
+                value = value.strip()
+
+                m = re.match(r"drm-resident-vram(\d+)", key)
+                if m:
+                    tile = m.group(1)
+                    vram[tile] = vram.get(tile, 0) + parse_size(value)
+                    continue
+
+                if key == "drm-resident-system":
+                    system += parse_size(value)
+                    continue
+
+                m = re.match(r"drm-total-cycles-(\w+)", key)
+                if m:
+                    # Global counter — take from first fd only.
+                    if m.group(1) not in cycles:
+                        cycles[m.group(1)] = int(value)
+                    continue
+
+                m = re.match(r"drm-cycles-(\w+)", key)
+                if m:
+                    engine = m.group(1)
+                    active_cycles[engine] = active_cycles.get(engine, 0) + int(value)
+                    continue
+
+                m = re.match(r"drm-engine-capacity-(\w+)", key)
+                if m:
+                    # Capacity is the same for all fds — take first only.
+                    if m.group(1) not in capacity:
+                        capacity[m.group(1)] = int(value)
+
+        clients.append({
             "pid": pid,
             "process": process_name(pid),
             "card": card,
-            "vram": {},
-            "system": 0,
-            "cycles": {},
-            "active_cycles": {},
-            "capacity": {},
-        }
-
-        for line in data.splitlines():
-            if ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-
-            m = re.match(r"drm-resident-vram(\d+)", key)
-            if m:
-                values["vram"][m.group(1)] = parse_size(value)
-                continue
-
-            if key == "drm-resident-system":
-                values["system"] = parse_size(value)
-                continue
-
-            m = re.match(r"drm-total-cycles-(\w+)", key)
-            if m:
-                values["cycles"][m.group(1)] = int(value)
-                continue
-
-            m = re.match(r"drm-cycles-(\w+)", key)
-            if m:
-                values["active_cycles"][m.group(1)] = int(value)
-                continue
-
-            m = re.match(r"drm-engine-capacity-(\w+)", key)
-            if m:
-                values["capacity"][m.group(1)] = int(value)
-
-        clients.append(values)
+            "vram": vram,
+            "system": system,
+            "cycles": cycles,
+            "active_cycles": active_cycles,
+            "capacity": capacity,
+        })
 
     return clients
 

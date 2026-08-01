@@ -14,11 +14,6 @@ gpu_vram = Gauge(
     "Resident VRAM used by Intel Xe GPUs"
 )
 
-gpu_vram_total = Gauge(
-    "intel_xe_vram_total_bytes",
-    "Total VRAM capacity of Intel Xe GPUs"
-)
-
 gpu_system = Gauge(
     "intel_xe_system_resident_bytes",
     "Resident system memory used by Intel Xe GPUs"
@@ -64,13 +59,11 @@ engine_util = Gauge(
 # ---------------- Helpers ----------------
 
 def parse_size(value):
+    """Parse human-readable size strings like '16248 KiB' or '184 MiB' into bytes."""
     parts = value.split()
-
     number = int(parts[0])
-
     if len(parts) == 1:
         return number
-
     return number * {
         "KiB": 1024,
         "MiB": 1024 ** 2,
@@ -79,6 +72,7 @@ def parse_size(value):
 
 
 def process_name(pid):
+    """Read the process name from /proc/<pid>/comm."""
     try:
         with open(f"/proc/{pid}/comm") as f:
             return f.read().strip()
@@ -87,16 +81,31 @@ def process_name(pid):
 
 
 def read_xe_clients():
+    """
+    Walk /proc/<pid>/fdinfo/<fd> and collect data from every file descriptor
+    that belongs to the Intel Xe DRM driver (identified by 'drm-driver: xe').
 
+    Each fdinfo file exposes per-client counters:
+
+      - drm-resident-vram<N>   : VRAM used by this client on tile N (KiB/MiB)
+
+      - drm-resident-system    : System memory used by this client
+
+      - drm-total-cycles-<eng> : Cumulative engine cycles since boot.
+        This is a global driver value — identical for every client, so
+        it must NOT be summed across clients.
+
+      - drm-cycles-<eng>       : Active cycles consumed by this client
+        on engine <eng> since boot.  This IS per-client and must be summed.
+
+      - drm-engine-capacity-<eng> : Number of engine units (e.g. vcs=2, vecs=2).
+        Used to scale the busy ratio so multi-unit engines can reach 100%.
+    """
     clients = []
 
     for path in glob.glob("/proc/[0-9]*/fdinfo/*"):
 
-        match = re.match(
-            r"/proc/(\d+)/fdinfo/",
-            path
-        )
-
+        match = re.match(r"/proc/(\d+)/fdinfo/", path)
         if not match:
             continue
 
@@ -105,113 +114,57 @@ def read_xe_clients():
         try:
             with open(path) as f:
                 data = f.read()
-
         except (PermissionError, FileNotFoundError):
             continue
 
-
-        if not re.search(
-            r"^drm-driver:\s*xe\s*$",
-            data,
-            re.MULTILINE
-        ):
+        if not re.search(r"^drm-driver:\s*xe\s*$", data, re.MULTILINE):
             continue
 
-
         card = "unknown"
-
-        m = re.search(
-            r"drm-pdev:\s+([0-9a-f:.]+)",
-            data
-        )
-
+        m = re.search(r"drm-pdev:\s+([0-9a-f:.]+)", data)
         if m:
             card = m.group(1)
-
 
         values = {
             "pid": pid,
             "process": process_name(pid),
             "card": card,
             "vram": {},
-            "vram_total": {},
             "system": 0,
             "cycles": {},
             "active_cycles": {},
             "capacity": {},
         }
 
-
         for line in data.splitlines():
-
             if ":" not in line:
                 continue
-
             key, value = line.split(":", 1)
-
             key = key.strip()
             value = value.strip()
 
-
-            # Resident VRAM tiles
-            m = re.match(
-                r"drm-resident-vram(\d+)",
-                key
-            )
-
+            m = re.match(r"drm-resident-vram(\d+)", key)
             if m:
                 values["vram"][m.group(1)] = parse_size(value)
                 continue
 
-
-            # Total VRAM tiles
-            m = re.match(
-                r"drm-total-vram(\d+)",
-                key
-            )
-
-            if m:
-                values["vram_total"][m.group(1)] = parse_size(value)
-                continue
-
-
             if key == "drm-resident-system":
-
                 values["system"] = parse_size(value)
                 continue
 
-
-            # Total engine cycles
-            m = re.match(
-                r"drm-total-cycles-(\w+)",
-                key
-            )
-
+            m = re.match(r"drm-total-cycles-(\w+)", key)
             if m:
                 values["cycles"][m.group(1)] = int(value)
                 continue
 
-
-            # Active engine cycles
-            m = re.match(
-                r"drm-cycles-(\w+)",
-                key
-            )
-
+            m = re.match(r"drm-cycles-(\w+)", key)
             if m:
                 values["active_cycles"][m.group(1)] = int(value)
                 continue
 
-
-            # Engine capacity
-            m = re.match(
-                r"drm-engine-capacity-(\w+)",
-                key
-            )
-
+            m = re.match(r"drm-engine-capacity-(\w+)", key)
             if m:
                 values["capacity"][m.group(1)] = int(value)
-
 
         clients.append(values)
 
@@ -225,82 +178,72 @@ previous_active_cycles = {}
 
 
 def update_engine_stats(clients):
+    """
+    Compute busy_ratio from counter deltas between polling intervals:
+
+      busy = delta_active / (delta_total * capacity)
+
+    Key observations from fdinfo analysis:
+
+      drm-total-cycles-<eng> is a global driver counter — every client's fdinfo
+      reports the same value.  Taking the first client's value avoids multiplying
+      the denominator by the number of clients.
+
+      drm-cycles-<eng> is per-client active cycles.  Summing across clients gives
+      the total active work done on the engine during the interval.
+
+      drm-engine-capacity-<eng> is the number of parallel engine units (e.g. 2
+      VCS instances).  Dividing by capacity allows the ratio to reach 1.0 when
+      all units are fully occupied.
+
+    The first scrape after startup skips utilization (no previous delta).
+    """
 
     total = {}
     active = {}
     capacities = {}
 
-
     for client in clients:
 
         for engine, value in client["cycles"].items():
-
-            total[engine] = (
-                total.get(engine, 0) +
-                value
-            )
-
+            # Global counter — take from first client only.
+            if engine not in total:
+                total[engine] = value
 
         for engine, value in client["active_cycles"].items():
-
-            active[engine] = (
-                active.get(engine, 0) +
-                value
-            )
-
+            # Per-client — sum across all clients.
+            active[engine] = active.get(engine, 0) + value
 
         for engine, value in client["capacity"].items():
-
             capacities[engine] = value
 
-
-
     for engine, value in total.items():
-
         engine_cycles.labels(engine).set(value)
 
-
     for engine, value in active.items():
-
         engine_active_cycles.labels(engine).set(value)
 
-
-
     for engine, value in capacities.items():
-
         engine_capacity.labels(engine).set(value)
 
-
-
-    # Calculate busy ratio from counter deltas
-
     for engine in total:
-
         if engine not in previous_total_cycles:
             continue
 
         old_total = previous_total_cycles[engine]
         old_active = previous_active_cycles.get(engine, 0)
-
         delta_total = total[engine] - old_total
         delta_active = active.get(engine, 0) - old_active
-
+        capacity = capacities.get(engine, 1)
 
         if delta_total > 0:
-
-            busy = delta_active / delta_total
-
-            engine_util.labels(engine).set(
-                max(0, min(busy, 1))
-            )
-
+            busy = delta_active / (delta_total * capacity)
+            engine_util.labels(engine).set(max(0, min(busy, 1)))
 
     previous_total_cycles.clear()
     previous_total_cycles.update(total)
-
     previous_active_cycles.clear()
     previous_active_cycles.update(active)
-
 
 
 # ---------------- Update metrics ----------------
@@ -313,17 +256,13 @@ def update():
     total_vram_capacity = {}
     total_system = 0
 
-
     process_vram.clear()
     process_system.clear()
-
 
     for client in clients:
 
         for tile, size in client["vram"].items():
-
             total_vram += size
-
             process_vram.labels(
                 client["pid"],
                 client["process"],
@@ -331,32 +270,17 @@ def update():
                 tile
             ).set(size)
 
-
-
         total_system += client["system"]
-
         process_system.labels(
             client["pid"],
             client["process"],
             client["card"]
-        ).set(
-            client["system"]
-        )
-
-
-        for tile, size in client["vram_total"].items():
-
-            if tile not in total_vram_capacity:
-                total_vram_capacity[tile] = size
-
+        ).set(client["system"])
 
     gpu_vram.set(total_vram)
-    gpu_vram_total.set(sum(total_vram_capacity.values()))
     gpu_system.set(total_system)
 
-
     update_engine_stats(clients)
-
 
 
 # ---------------- Main ----------------
@@ -366,7 +290,5 @@ if __name__ == "__main__":
     start_http_server(9830)
 
     while True:
-
         update()
-
         time.sleep(5)

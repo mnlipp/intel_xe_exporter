@@ -5,6 +5,10 @@ metadata:
   namespace: monitoring
   labels:
     app: intel-xe-exporter
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9830"
+    prometheus.io/path: "/"
 spec:
   type: ClusterIP
   clusterIP: None

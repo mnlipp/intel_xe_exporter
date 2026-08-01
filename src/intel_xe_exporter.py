@@ -34,7 +34,7 @@ process_system = Gauge(
 engine_cycles = Gauge(
     "intel_xe_engine_cycles_total",
     "Total Intel Xe engine cycles",
-    ["engine"]
+    ["engine", "pid", "process"]
 )
 
 engine_active_cycles = Gauge(
@@ -250,8 +250,9 @@ def update_engine_stats(clients):
         for engine, value in client["capacity"].items():
             capacities[engine] = value
 
-    for engine, value in total.items():
-        engine_cycles.labels(engine).set(value)
+    for client in clients:
+        for engine, value in client["cycles"].items():
+            engine_cycles.labels(engine, client["pid"], client["process"]).set(value)
 
     for engine, value in active.items():
         engine_active_cycles.labels(engine).set(value)
@@ -291,6 +292,7 @@ def update():
 
     process_vram.clear()
     process_system.clear()
+    engine_cycles.clear()
 
     for client in clients:
 

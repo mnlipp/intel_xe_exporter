@@ -1,0 +1,127 @@
+{
+  "type": "timeseries",
+  "title": "GPU/VRAM Usage",
+  "description": "RCS = Render Command Streamer (Main graphics/render engine), CCS = Compute Command Streamer (General-purpose compute), VCS = Video Command Streamer (Video decode/encode), VECS = Video Enhanced Stream (Video post-processing), BCS = Blitter Command Streamer (Copy engine)",
+  "gridPos": {
+    "x": 10,
+    "y": 10,
+    "h": 8,
+    "w": 14
+  },
+  "fieldConfig": {
+    "defaults": {
+      "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "barAlignment": 0,
+        "barWidthFactor": 0.6,
+        "lineWidth": 1,
+        "fillOpacity": 0,
+        "gradientMode": "none",
+        "spanNulls": false,
+        "insertNulls": false,
+        "showPoints": "auto",
+        "showValues": false,
+        "pointSize": 5,
+        "stacking": {
+          "mode": "none",
+          "group": "A"
+        },
+        "axisPlacement": "left",
+        "axisLabel": "",
+        "axisColorMode": "text",
+        "axisBorderShow": false,
+        "scaleDistribution": {
+          "type": "linear"
+        },
+        "axisCenteredZero": false,
+        "hideFrom": {
+          "tooltip": false,
+          "viz": false,
+          "legend": false
+        },
+        "thresholdsStyle": {
+          "mode": "off"
+        }
+      },
+      "color": {
+        "mode": "palette-classic"
+      },
+      "mappings": [],
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          },
+          {
+            "color": "red",
+            "value": 80
+          }
+        ]
+      },
+      "max": 100,
+      "min": 0,
+      "unit": "percent"
+    },
+    "overrides": [
+      {
+        "matcher": {
+          "id": "byRegexp",
+          "options": "/VRAM.*/"
+        },
+        "properties": [
+          {
+            "id": "unit",
+            "value": "bytes"
+          },
+          {
+            "id": "custom.axisPlacement",
+            "value": "right"
+          },
+          {
+            "id": "max"
+          }
+        ]
+      }
+    ]
+  },
+  "pluginVersion": "12.4.6",
+  "targets": [
+    {
+      "editorMode": "code",
+      "expr": "sum(intel_xe_process_vram_resident_bytes)",
+      "legendFormat": "VRAM",
+      "range": true,
+      "refId": "A"
+    },
+    {
+      "editorMode": "code",
+      "expr": "sum by(engine) (intel_xe_engine_busy_ratio)*100",
+      "legendFormat": "GPU ({{engine}})",
+      "range": true,
+      "refId": "F"
+    }
+  ],
+  "datasource": {
+    "type": "prometheus",
+    "uid": "P14A2326B6BB54F40"
+  },
+  "options": {
+    "tooltip": {
+      "mode": "multi",
+      "sort": "none",
+      "hideZeros": false
+    },
+    "legend": {
+      "showLegend": true,
+      "displayMode": "table",
+      "placement": "right",
+      "calcs": [
+        "last",
+        "max"
+      ]
+    }
+  }
+}

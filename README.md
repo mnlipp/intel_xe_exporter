@@ -6,6 +6,9 @@ and engine utilization as Prometheus gauges.
 
 Runs as a DaemonSet on Kubernetes, one replica per node with an Intel Arc GPU.
 
+Metrics that are already made available by node-exporter (hwmon...) such
+as temperature, fan speed and power usage are not duplicated by this exporter. 
+
 ## Metrics
 
 | Metric | Type | Labels |
